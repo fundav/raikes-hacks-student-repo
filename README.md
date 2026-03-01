@@ -1,4 +1,4 @@
-# raikes-hacks-student-repo
+# Raikes-hacks-student-repo
 A Student Dummy Repo
 # SD Tester Agent
 
