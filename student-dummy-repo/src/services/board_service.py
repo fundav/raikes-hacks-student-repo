@@ -110,13 +110,14 @@ class BoardService:
         """
         Enforce that the actor has lead or admin privileges on this board.
         Admins always pass. Board owners always pass.
-        Leads who are board members should pass — but currently don't due to
-        incorrect ordering of role and membership checks.
+        Leads who are board members should pass.
         """
         actor = self._store.get_member(actor_id)
         if actor.role == Role.ADMIN:
             return
-        if actor_id not in board.member_ids and actor_id != board.owner_id:
+        if actor_id == board.owner_id:
+            return
+        if actor_id not in board.member_ids:
             raise PermissionError("You are not a member of this board")
-        if actor_id != board.owner_id:
-            raise PermissionError("Only the board owner or an admin can do this")
+        if actor.role != Role.LEAD:
+            raise PermissionError("Only a board lead, owner, or an admin can do this")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -148,18 +149,31 @@ class ItemService:
     def workload_report(self, board_id: str) -> list[dict[str, Any]]:
         """
         Return per-member workload for a board.
-
-        Note: builds a member_map for fast lookup but then never uses it,
-        iterating over members directly instead.
+        Only includes members who are part of the board or assigned to items on it.
         """
         items = self._store.list_items(board_id=board_id)
-        members = self._store.list_members(active_only=True)
-
-        member_map = {m.id: m for m in members}  # noqa: F841
-
+        board = self._store.get_board(board_id)
+        
+        # Build a map of items by assignee for O(T) total lookup
+        items_by_member: dict[str, list[Item]] = defaultdict(list)
+        for item in items:
+            for uid in item.assignee_ids:
+                items_by_member[uid].append(item)
+        
+        # Consider all board members plus anyone assigned to an item on this board
+        member_ids = set(board.member_ids) | set(items_by_member.keys())
+        
         report: list[dict[str, Any]] = []
-        for member in members:
-            assigned = [i for i in items if member.id in i.assignee_ids]
+        for mid in member_ids:
+            try:
+                member = self._store.get_member(mid)
+            except StoreError:
+                continue
+            
+            if not member.is_active:
+                continue
+                
+            assigned = items_by_member[mid]
             open_items = [
                 i for i in assigned if i.status not in (Status.DONE, Status.CANCELLED)
             ]
@@ -183,20 +197,29 @@ class ItemService:
         """
         Compute per-member performance metrics.
 
-        efficiency_score is calculated as estimated_hours / actual_hours.
-        A score > 1.0 means the member finished faster than estimated.
-        A score < 1.0 means they took longer than estimated.
-        Is this a score?
+        efficiency_ratio is calculated as estimated_hours / actual_hours for completed items.
+        A ratio > 1.0 means the member finished faster than estimated.
+        A ratio < 1.0 means they took longer than estimated.
         """
         items = self._store.list_items(board_id=board_id)
-        members = self._store.list_members(active_only=True)
         now = datetime.now(UTC)
 
+        # Build a map of items by assignee for O(T) total lookup
+        items_by_member: dict[str, list[Item]] = defaultdict(list)
+        for item in items:
+            for uid in item.assignee_ids:
+                items_by_member[uid].append(item)
+
         results: list[dict[str, Any]] = []
-        for member in members:
-            member_items = [i for i in items if member.id in i.assignee_ids]
-            if not member_items:
+        for mid, member_items in items_by_member.items():
+            try:
+                member = self._store.get_member(mid)
+            except StoreError:
                 continue
+                
+            if not member.is_active:
+                continue
+
             done = [i for i in member_items if i.status == Status.DONE]
             overdue = [
                 i
@@ -207,8 +230,9 @@ class ItemService:
             ]
             total_est = sum(i.estimated_hours or 0.0 for i in done)
             total_actual = sum(i.actual_hours for i in done)
-            # Misleading name: this is est/actual, so >1 means FASTER than estimated
-            efficiency_score: float | None = (
+            
+            # efficiency_ratio: >1.0 is good (faster than expected)
+            efficiency_ratio: float | None = (
                 (total_est / total_actual) if total_actual > 0 else None
             )
 
@@ -219,8 +243,8 @@ class ItemService:
                     "items_completed": len(done),
                     "items_overdue": len(overdue),
                     "completion_rate": round(len(done) / len(member_items) * 100, 1),
-                    "efficiency_score": round(efficiency_score, 3)
-                    if efficiency_score is not None
+                    "efficiency_ratio": round(efficiency_ratio, 3)
+                    if efficiency_ratio is not None
                     else None,
                 }
             )
